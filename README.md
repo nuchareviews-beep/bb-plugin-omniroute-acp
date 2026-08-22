@@ -4,9 +4,9 @@ Bridges BB to a locally-running [OmniRoute](https://github.com/diegosouzapw/Omni
 
 ## What it does
 
-- Adds **OmniRoute** to the BB provider picker. Threads created on this provider forward each turn to OmniRoute's OpenAI-compatible `/api/v1/chat/completions`, so any of the ~300 upstream providers/models OmniRoute fronts can be used from inside BB.
+- Adds **OmniRoute** to the BB provider picker, with a real model dropdown backed by OmniRoute's own `/api/v1/models` — it lists OmniRoute's auto-routing combos (`auto/smart`, `auto/coding`, `auto/cheap`, etc.), not a single placeholder entry. Threads created on this provider forward each turn to OmniRoute's OpenAI-compatible `/api/v1/chat/completions`, so any of the ~300 upstream providers/models OmniRoute fronts can be used from inside BB.
 - Polls OmniRoute's own `/api/usage/analytics` and `/api/usage/call-logs` on a 5-minute background service and exposes the latest snapshot via a `usage` RPC method (bb-plugin-usage has no ingestion API for other plugins to push into, so this plugin owns its own metrics surface).
-- Registers an `omniswarm_spawn` native tool that spawns a batch of hidden subagent threads on the OmniRoute provider (or another named provider), so many models can work a task list in parallel.
+- Registers an `omniswarm_spawn` native tool that spawns a batch of hidden subagent threads on the OmniRoute provider (or another named provider), so many models can work a task list in parallel. **Work in progress** — it exists and runs, but hasn't been exercised or tuned for real multi-task fan-out workloads yet; treat it as an early draft, not a finished feature.
 
 ## Requirements
 

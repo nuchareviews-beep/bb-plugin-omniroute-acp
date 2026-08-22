@@ -84,7 +84,8 @@ function loadConfig(): OmniRouteConfig | null {
 const instanceNonce = randomUUID().replaceAll("-", "").slice(0, 12);
 let threadCounter = 0;
 let turnCounter = 0;
-const sessions = new Map<string, string>();
+/** threadId -> { providerThreadId, model } — model is frozen at thread construction. */
+const sessions = new Map<string, { providerThreadId: string; model: string }>();
 
 type JsonRpcId = string | number;
 
@@ -111,9 +112,71 @@ function promptText(input: readonly PromptInput[]): string {
     .join("");
 }
 
+// ---------------------------------------------------------------------------
+// Live model catalog: OmniRoute's /api/v1/models lists ~500 individual
+// provider models plus its named auto-routing combos (owned_by: "combo").
+// The picker shows combos, not the raw provider catalog — a combo is what a
+// user actually picks (e.g. "auto/coding", "auto/cheap"), and OmniRoute
+// resolves it to a concrete model per request.
+// ---------------------------------------------------------------------------
+
+interface OmniRouteModel {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  supportedReasoningEfforts: { reasoningEffort: "low" | "medium" | "high"; description: string }[];
+  defaultReasoningEffort: "low" | "medium" | "high";
+  isDefault: boolean;
+}
+
+let modelCache: { at: number; models: OmniRouteModel[] } | null = null;
+const MODEL_CACHE_TTL_MS = 5 * 60_000;
+
+function prettifyComboId(id: string): string {
+  const withoutPrefix = id.startsWith("auto/") ? id.slice("auto/".length) : id;
+  return withoutPrefix
+    .split(/[-:]/)
+    .filter(Boolean)
+    .map((word) => word[0]!.toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+async function fetchComboModels(config: OmniRouteConfig): Promise<OmniRouteModel[]> {
+  if (modelCache && Date.now() - modelCache.at < MODEL_CACHE_TTL_MS) return modelCache.models;
+  try {
+    const res = await fetch(`${config.baseUrl}/api/v1/models`, {
+      headers: config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {},
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return modelCache?.models ?? [];
+    const data = (await res.json()) as { data?: { id: string; owned_by?: string }[] };
+    const combos = (data.data ?? []).filter((m) => m.owned_by === "combo");
+    const models: OmniRouteModel[] = combos.map((combo) => ({
+      id: combo.id,
+      model: combo.id,
+      displayName: prettifyComboId(combo.id),
+      description: `OmniRoute auto-routing combo (${combo.id}) — picks the best available provider/model for this category automatically.`,
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "Low" },
+        { reasoningEffort: "medium", description: "Medium" },
+        { reasoningEffort: "high", description: "High" },
+      ],
+      defaultReasoningEffort: "medium",
+      isDefault: combo.id === config.model,
+    }));
+    if (models.length > 0 && !models.some((m) => m.isDefault)) models[0]!.isDefault = true;
+    modelCache = { at: Date.now(), models };
+    return models;
+  } catch {
+    return modelCache?.models ?? [];
+  }
+}
+
 /** One non-streaming call to OmniRoute's OpenAI-compatible endpoint. */
 async function callOmniRoute(
   config: OmniRouteConfig,
+  model: string,
   prompt: string,
 ): Promise<{ text: string } | { error: string }> {
   try {
@@ -124,7 +187,7 @@ async function callOmniRoute(
         ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
       },
       body: JSON.stringify({
-        model: config.model,
+        model,
         messages: [{ role: "user", content: prompt }],
         stream: false,
       }),
@@ -143,6 +206,7 @@ async function callOmniRoute(
 async function runTurn(args: {
   threadId: string;
   providerThreadId: string;
+  model: string;
   input: readonly PromptInput[];
   clientRequestId?: string;
 }): Promise<void> {
@@ -174,7 +238,7 @@ async function runTurn(args: {
 
   const config = loadConfig();
   const result = config
-    ? await callOmniRoute(config, promptText(args.input))
+    ? await callOmniRoute(config, args.model, promptText(args.input))
     : { error: "OmniRoute is not configured — set baseUrl/apiKey in plugin settings." };
 
   const text = "error" in result ? `OmniRoute request failed: ${result.error}` : result.text;
@@ -221,27 +285,9 @@ const handlers: Record<string, RequestHandler> = {
       invalidParams(id, BRIDGE_REQUEST_METHODS.modelList, parsed.error.issues);
       return;
     }
-    // OmniRoute fronts hundreds of models across providers; a single default
-    // entry (the configured model/combo, e.g. "auto/smart") lets bb resolve
-    // a default without --model on every spawn, rather than enumerating a
-    // live catalog here.
-    respondResult(id, {
-      models: [
-        {
-          id: "default",
-          model: "default",
-          displayName: "OmniRoute (configured default)",
-          description: "Uses this plugin's configured default model/combo.",
-          supportedReasoningEfforts: [
-            { reasoningEffort: "low", description: "Low" },
-            { reasoningEffort: "medium", description: "Medium" },
-            { reasoningEffort: "high", description: "High" },
-          ],
-          defaultReasoningEffort: "medium",
-          isDefault: true,
-        },
-      ],
-      selectedOnlyModels: [],
+    const config = loadConfig() ?? { baseUrl: "http://localhost:20128", apiKey: "", model: "auto/smart" };
+    void fetchComboModels(config).then((models) => {
+      respondResult(id, { models, selectedOnlyModels: [] });
     });
   },
 
@@ -253,14 +299,16 @@ const handlers: Record<string, RequestHandler> = {
     }
     threadCounter += 1;
     const providerThreadId = `omniroute_${instanceNonce}_${threadCounter}`;
-    sessions.set(parsed.data.threadId, providerThreadId);
+    const config = loadConfig();
+    const model = parsed.data.options?.model || config?.model || "auto/smart";
+    sessions.set(parsed.data.threadId, { providerThreadId, model });
     notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
       threadId: parsed.data.threadId,
       providerThreadId,
     });
     respondResult(id, { providerThreadId });
     if (parsed.data.input !== undefined && parsed.data.input.length > 0) {
-      void runTurn({ threadId: parsed.data.threadId, providerThreadId, input: parsed.data.input });
+      void runTurn({ threadId: parsed.data.threadId, providerThreadId, model, input: parsed.data.input });
     }
   },
 
@@ -270,7 +318,9 @@ const handlers: Record<string, RequestHandler> = {
       invalidParams(id, BRIDGE_REQUEST_METHODS.threadResume, parsed.error.issues);
       return;
     }
-    sessions.set(parsed.data.threadId, parsed.data.providerThreadId);
+    const config = loadConfig();
+    const model = parsed.data.options?.model || config?.model || "auto/smart";
+    sessions.set(parsed.data.threadId, { providerThreadId: parsed.data.providerThreadId, model });
     notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
       threadId: parsed.data.threadId,
       providerThreadId: parsed.data.providerThreadId,
@@ -285,9 +335,13 @@ const handlers: Record<string, RequestHandler> = {
       return;
     }
     respondResult(id, {});
+    const session = sessions.get(parsed.data.threadId);
+    const config = loadConfig();
+    const model = parsed.data.options?.model || session?.model || config?.model || "auto/smart";
     void runTurn({
       threadId: parsed.data.threadId,
       providerThreadId: parsed.data.providerThreadId,
+      model,
       input: parsed.data.input,
       clientRequestId: parsed.data.clientRequestId,
     });

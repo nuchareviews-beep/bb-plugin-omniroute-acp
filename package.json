@@ -10,7 +10,7 @@
     "name": "OmniRoute",
     "description": "Bridges BB to a local OmniRoute instance: registers it as an agent provider, exposes usage/cost metrics, and provides an omniswarm_spawn tool for fanning out subagent threads across it.",
     "branding": {
-      "icon": "Zap"
+      "icon": "Waypoints"
     },
     "server": "./server.ts",
     "host": "./host.ts"

@@ -59,7 +59,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.experimental_registerProvider({
     id: "omniroute",
     displayName: "OmniRoute",
-    icon: "Zap",
+    icon: "Waypoints",
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,
@@ -80,7 +80,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "omniswarm_spawn",
     description:
-      "Spawn multiple hidden subagent threads in parallel, each running one task, on the OmniRoute provider (or another installed provider). Returns the spawned thread ids.",
+      "(Work in progress) Spawn multiple hidden subagent threads in parallel, each running one task, on the OmniRoute provider (or another installed provider). Returns the spawned thread ids.",
     instructions:
       "Use omniswarm_spawn to fan out independent, parallelizable tasks across OmniRoute-routed models instead of doing them serially in this thread.",
     parameters: z.object({

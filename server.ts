@@ -59,7 +59,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.experimental_registerProvider({
     id: "omniroute",
     displayName: "OmniRoute",
-    icon: "Waypoints",
+    icon: "./assets/icon.svg",
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,

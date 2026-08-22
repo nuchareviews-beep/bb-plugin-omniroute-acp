@@ -1,83 +1,38 @@
 # bb-plugin-omniroute-acp
 
-A BB plugin.
+Bridges BB to a locally-running [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance and registers it as a BB agent provider.
 
-## Manifest
+## What it does
 
-`package.json` is the plugin manifest. Notable fields:
+- Adds **OmniRoute** to the BB provider picker. Threads created on this provider forward each turn to OmniRoute's OpenAI-compatible `/api/v1/chat/completions`, so any of the ~300 upstream providers/models OmniRoute fronts can be used from inside BB.
+- Polls OmniRoute's own `/api/usage/analytics` and `/api/usage/call-logs` on a 5-minute background service and exposes the latest snapshot via a `usage` RPC method (bb-plugin-usage has no ingestion API for other plugins to push into, so this plugin owns its own metrics surface).
+- Registers an `omniswarm_spawn` native tool that spawns a batch of hidden subagent threads on the OmniRoute provider (or another named provider), so many models can work a task list in parallel.
 
-- `bb.server` — backend entry (required); optional `bb.app` for a frontend.
-- `bb.name` and `bb.description` — required human-facing identity.
-- `bb.branding` — required; declare `icon` as a BB icon name or a
-  plugin-relative compact SVG, or declare `logo.light` (with optional
-  `logo.dark`). Logo assets must be relative `.svg`, `.png`, or
-  `.webp` files.
-- `engines.bb` — supported bb app version range.
-- `engines.bbPluginSdk` — the lowest plugin SDK you need (scaffold:
-  `>=0.4.8`). BB reads this as a floor, not a ceiling: a later
-  SDK in the same major still loads your plugin.
-- `dependencies` — every package your source imports that BB does not provide.
-  `bb plugin build` inlines them into `dist/`, and git installs resolve this
-  list alone, so a build-required package here rather than in
-  `devDependencies` is what keeps your plugin installable. `devDependencies`
-  is for types and tooling only (BB shims React, the portal primitives, and
-  `@get-bb/plugin-sdk` at runtime — never bundle them).
+## Requirements
 
-Run `bb plugin build` before publishing git/npm installs. It writes
-`dist/server.js` + `server.meta.json` (and, with `bb.app`, `app.js` /
-`app.css` / `app.meta.json`). Each `*.meta.json` stamps SDK major/version,
-`artifactFormatVersion`, `pluginId`, `pluginVersion`, and
-`builtWith` so managed installs can verify the artifacts.
+- A reachable OmniRoute instance. The plugin defaults to `http://localhost:20128`; set another URL with `bb plugin config omniroute-acp set baseUrl <url>`.
+- If OmniRoute's `REQUIRE_API_KEY` is on, set an API key too: `bb plugin config omniroute-acp set apiKey <key>` (stored as a secret, never leaves the server).
 
 ## Install
 
-From this directory (`bb plugin new` already ran the install; a fresh clone
-needs it):
-
-```
-npm install
-bb plugin install .
+```sh
+bb plugin install git:https://github.com/nuchareviews-beep/bb-plugin-omniroute-acp.git@^0.1.0
 ```
 
-After editing sources, reload:
+## Settings
 
-```
-bb plugin reload omniroute-acp
-```
+- `baseUrl` (default `http://localhost:20128`) — OmniRoute base URL
+- `apiKey` (secret) — OmniRoute bearer token if that instance requires one
+- `model` (default `auto/smart`) — default model or combo id the picker uses
 
-## Configure
+## Scope
 
-```
-bb plugin config omniroute-acp
-bb plugin config omniroute-acp set greeting hi
-```
+Single-shot, non-streaming turns (one request per `turn/start`, no mid-turn tool calls, no steer). Sufficient to route chat completions through OmniRoute end-to-end; streaming and provider-native tool calls are out of scope for this release.
 
-## Types & API reference
+## Related
 
-The plugin API ships as the npm package `@get-bb/plugin-sdk`, pinned to an
-exact version in `devDependencies` (`0.4.8` — the SDK of the BB
-that scaffolded this plugin). After `npm install`, the full surface is on disk
-at:
+- [bb-plugin-antigravity-acp](https://github.com/nuchareviews-beep/bb-plugin-antigravity-acp) — sibling plugin bridging BB to the local Antigravity CLI (`agy`).
 
-```
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts      # backend
-node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts  # frontend
-```
+## License
 
-Your editor and `tsc` resolve `@get-bb/plugin-sdk` there through ordinary node
-resolution — no path mapping. These are readable declarations: open them for an
-exact signature.
-
-The SDK surface grows with every BB release, so the pin has to track the BB you
-actually run:
-
-```
-bb plugin types          # sync this plugin's SDK surface to the running BB
-bb plugin types --check  # CI: fail when it does not match
-```
-
-Ask BB to write plugins for you: the `bb-plugin-authoring` skill documents
-the whole surface with examples.
-
-Confused by the API, or need something the types don't explain? Clone the BB
-repo and read the source: <https://github.com/get-bb/bb>.
+[MIT](LICENSE)

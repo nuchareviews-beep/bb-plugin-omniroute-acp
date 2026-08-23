@@ -77,38 +77,88 @@ export default async function plugin(bb: BbPluginApi) {
   // omniswarm_spawn: fan a batch of prompts out to hidden subagent threads
   // running on the omniroute provider (or whichever providerId is given),
   // so many OmniRoute-routed models can work a task list in parallel.
+  // Falls back to fallbackProviderId (default: claude-code) per task if the
+  // primary provider is unreachable or a given spawn fails — this is the
+  // real, coded half of AGENTS.md's routing directive ("use OmniRoute for
+  // delegated subtasks unless it fails or breaks").
+  async function primaryProviderReachable(providerId: string): Promise<boolean> {
+    if (providerId !== "omniroute") return true; // only OmniRoute has a cheap external health check here
+    try {
+      const { baseUrl, apiKey } = await settings.get();
+      const res = await fetch(`${baseUrl}/api/v1`, {
+        headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(3_000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   bb.agents.registerTool({
     name: "omniswarm_spawn",
     description:
-      "(Work in progress) Spawn multiple hidden subagent threads in parallel, each running one task, on the OmniRoute provider (or another installed provider). Returns the spawned thread ids.",
+      "Spawn multiple hidden subagent threads in parallel, each running one task, on the OmniRoute provider by default. Falls back per-task to fallbackProviderId if OmniRoute is unreachable or a spawn fails. Returns the spawned thread ids and which provider actually ran each one.",
     instructions:
-      "Use omniswarm_spawn to fan out independent, parallelizable tasks across OmniRoute-routed models instead of doing them serially in this thread.",
+      "Use omniswarm_spawn to fan out independent, parallelizable tasks across OmniRoute-routed models instead of doing them serially in this thread or reaching for a native subagent tool. It falls back automatically per AGENTS.md's routing directive — you don't need to check reachability yourself first.",
     parameters: z.object({
       tasks: z
         .array(z.object({ prompt: z.string().min(1), title: z.string().optional() }))
         .min(1)
         .max(20),
       providerId: z.string().optional(),
+      fallbackProviderId: z.string().optional(),
       projectId: z.string().optional(),
     }),
-    async execute({ tasks, providerId, projectId: explicitProjectId }, { projectId: contextProjectId }) {
+    async execute(
+      { tasks, providerId, fallbackProviderId, projectId: explicitProjectId },
+      { projectId: contextProjectId },
+    ) {
       const projectId = explicitProjectId ?? contextProjectId;
       if (!projectId) {
         return { content: [{ type: "text", text: "No projectId available to spawn into." }], isError: true };
       }
-      const spawned: { threadId: string; title?: string }[] = [];
+      const primary = providerId ?? "omniroute";
+      const fallback = fallbackProviderId ?? "claude-code";
+      const primaryUp = await primaryProviderReachable(primary);
+
+      const results: { threadId: string; title?: string; providerId: string; fellBack: boolean; error?: string }[] = [];
       for (const task of tasks) {
-        const thread = await bb.sdk.threads.spawn({
-          projectId,
-          environment: { type: "project-default" },
-          prompt: task.prompt,
-          title: task.title,
-          providerId: (providerId ?? "omniroute") as never,
-          visibility: "hidden",
-        });
-        spawned.push({ threadId: thread.id, title: task.title });
+        const attemptOrder = primaryUp ? [primary, fallback] : [fallback, primary];
+        let lastError: string | undefined;
+        let spawned = false;
+        for (const [index, attemptProviderId] of attemptOrder.entries()) {
+          try {
+            const thread = await bb.sdk.threads.spawn({
+              projectId,
+              environment: { type: "project-default" },
+              prompt: task.prompt,
+              title: task.title,
+              providerId: attemptProviderId as never,
+              visibility: "hidden",
+            });
+            results.push({
+              threadId: thread.id,
+              title: task.title,
+              providerId: attemptProviderId,
+              fellBack: index > 0 || !primaryUp,
+            });
+            spawned = true;
+            break;
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
+        }
+        if (!spawned) {
+          results.push({ threadId: "", title: task.title, providerId: "none", fellBack: true, error: lastError });
+        }
       }
-      return spawned.map((s) => `${s.threadId}${s.title ? ` — ${s.title}` : ""}`).join("\n");
+
+      return results
+        .map((r) => (r.threadId
+          ? `${r.threadId}${r.title ? ` — ${r.title}` : ""} [${r.providerId}${r.fellBack ? ", fallback" : ""}]`
+          : `FAILED${r.title ? ` — ${r.title}` : ""}: ${r.error}`))
+        .join("\n");
     },
   });
 

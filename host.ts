@@ -157,11 +157,11 @@ async function fetchComboModels(config: OmniRouteConfig): Promise<OmniRouteModel
       model: combo.id,
       displayName: prettifyComboId(combo.id),
       description: `OmniRoute auto-routing combo (${combo.id}) — picks the best available provider/model for this category automatically.`,
-      supportedReasoningEfforts: [
-        { reasoningEffort: "low", description: "Low" },
-        { reasoningEffort: "medium", description: "Medium" },
-        { reasoningEffort: "high", description: "High" },
-      ],
+      // OmniRoute combo ids (auto/smart, auto/coding, ...) already encode
+      // routing intent; there's no separate reasoning-effort request field
+      // for them, so a single fixed value keeps BB from showing a picker
+      // that would have no effect on the actual request.
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Standard" }],
       defaultReasoningEffort: "medium",
       isDefault: combo.id === config.model,
     }));

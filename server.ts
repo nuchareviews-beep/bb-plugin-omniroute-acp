@@ -26,37 +26,64 @@ export default async function plugin(bb: BbPluginApi) {
 
   const hostClient = bb.hosts.experimental_client({ contract: omniRouteHostContract });
 
-  async function primaryHostId(): Promise<string | undefined> {
-    const hosts = await bb.sdk.hosts.list();
-    return hosts[0]?.id;
-  }
-
-  async function pushConfigToHost(): Promise<void> {
+  async function pushConfigToHost(hostId: string, signal: AbortSignal): Promise<void> {
     const { baseUrl, apiKey, model } = await settings.get();
-    const hostId = await primaryHostId();
-    if (!hostId) {
-      bb.log.warn("no enrolled host to push OmniRoute config to");
-      return;
-    }
     try {
-      await hostClient.call("setConfig", { baseUrl, apiKey: apiKey ?? "", model }, { hostId });
-    } catch (err) {
-      bb.log.error(`failed to push config to host: ${err instanceof Error ? err.message : String(err)}`);
+      await hostClient.call("setConfig", { baseUrl, apiKey: apiKey ?? "", model }, { hostId, signal });
+    } catch {
+      // A disconnect can race the connected-host snapshot. The reconnect
+      // subscription below makes this retry without treating it as a load error.
     }
   }
 
-  // Host RPC calls are rejected during factory registration ("host plugin
-  // calls are unavailable during factory registration") — defer the initial
-  // push to a timer tick, same as any handler/service/timer context.
-  setTimeout(() => void pushConfigToHost(), 0);
+  let requestConfigReconcile = () => {};
   settings.onChange(() => {
-    void pushConfigToHost();
+    requestConfigReconcile();
+  });
+
+  bb.background.service("host-config-reconciler", {
+    async start(signal) {
+      let reconcileRequested = true;
+      let wake: (() => void) | null = null;
+      requestConfigReconcile = () => {
+        reconcileRequested = true;
+        wake?.();
+      };
+      const unsubscribeHost = bb.sdk.subscribe({
+        event: "host:changed",
+        callback: (event) => {
+          if (event.changes.includes("host-connected")) requestConfigReconcile();
+        },
+      });
+      try {
+        while (!signal.aborted) {
+          if (reconcileRequested) {
+            reconcileRequested = false;
+            const hosts = await bb.sdk.hosts.list({ signal });
+            await Promise.all(
+              hosts
+                .filter((host) => host.status === "connected")
+                .map((host) => pushConfigToHost(host.id, signal)),
+            );
+          }
+          if (signal.aborted) break;
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          wake = null;
+        }
+      } finally {
+        requestConfigReconcile = () => {};
+        unsubscribeHost();
+      }
+    },
   });
 
   // Register OmniRoute as a picker-visible agent provider. The bridge that
   // actually services turns lives in host.ts (bb.host), forwarding each turn
   // to OmniRoute's OpenAI-compatible /api/v1/chat/completions.
-  bb.agents.experimental_registerProvider({
+  bb.providers.register({
     id: "omniroute",
     displayName: "OmniRoute",
     icon: "./assets/icon.svg",
@@ -67,7 +94,6 @@ export default async function plugin(bb: BbPluginApi) {
       supportsManualCompaction: false,
       supportsThreadArchive: false,
       supportsThreadRename: false,
-      supportsWorkflows: false,
       permissionModes: ["full"],
       reasoningLevels: ["medium"],
     },

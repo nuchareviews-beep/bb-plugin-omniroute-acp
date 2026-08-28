@@ -4,7 +4,7 @@
   "type": "module",
   "engines": {
     "bb": ">=0.39",
-    "bbPluginSdk": ">=0.4.8"
+    "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
     "name": "OmniRoute",
@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "zod": "^4.3.6",
-    "@get-bb/plugin-sdk": "0.4.8"
+    "@get-bb/plugin-sdk": "0.4.21"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

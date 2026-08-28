@@ -35,7 +35,7 @@ import {
   experimental_defineProviderBridge,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { omniRouteHostContract } from "./contract.js";
@@ -49,17 +49,31 @@ import { omniRouteHostContract } from "./contract.js";
 // ("host-data/" vs "bridge-data/" under the plugin's data directory), not a
 // shared one, despite both being "this plugin on this daemon". So config
 // can't be handed off through either context's dataDir; it goes through a
-// fixed OS-temp-dir path instead, which both processes share because both
-// run on the same host machine as the daemon that spawned them.
+// private OS-temp-dir directory instead, which both processes share because
+// both run on the same host machine as the daemon that spawned them.
 // ---------------------------------------------------------------------------
 
-const configPath = join(tmpdir(), "bb-plugin-omniroute-acp-config.json");
+const configDir = join(tmpdir(), "bb-plugin-omniroute-acp");
+const configPath = join(configDir, "config.json");
+const legacyConfigPath = join(tmpdir(), "bb-plugin-omniroute-acp-config.json");
+
+function writeConfig(input: object): void {
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  writeFileSync(configPath, JSON.stringify(input), { encoding: "utf8", mode: 0o600 });
+  chmodSync(configPath, 0o600);
+  try {
+    unlinkSync(legacyConfigPath);
+  } catch {
+    // The legacy file is absent after the first successful migration.
+  }
+}
 
 export default experimental_defineHostEntry({
   contract: omniRouteHostContract,
   handlers: {
     setConfig: (input) => {
-      writeFileSync(configPath, JSON.stringify(input));
+      writeConfig(input);
       return { ok: true as const };
     },
   },
